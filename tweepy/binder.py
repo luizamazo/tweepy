@@ -1,24 +1,27 @@
 # Tweepy
-# Copyright 2009-2020 Joshua Roesslein
+# Copyright 2009-2010 Joshua Roesslein
 # See LICENSE for details.
 
-import logging
-import re
-import sys
+from __future__ import print_function
+
 import time
+import re
 
-import requests
-import six
 from six.moves.urllib.parse import quote, urlencode
+import requests
 
-from tweepy.error import is_rate_limit_error_message, RateLimitError, TweepError
-from tweepy.models import Model
+import logging
+
+from tweepy.error import TweepError, RateLimitError, is_rate_limit_error_message
 from tweepy.utils import convert_to_utf8_str
+from tweepy.models import Model
+import six
+import sys
 
-re_path_template = re.compile(r'{\w+}')
 
-log = logging.getLogger(__name__)
+re_path_template = re.compile('{\w+}')
 
+log = logging.getLogger('tweepy.binder')
 
 def bind_api(**config):
 
@@ -36,7 +39,7 @@ def bind_api(**config):
         use_cache = config.get('use_cache', True)
         session = requests.Session()
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, args, kwargs):
             api = self.api
             # If authentication is required and no credentials
             # are provided, throw an error.
@@ -44,7 +47,6 @@ def bind_api(**config):
                 raise TweepError('Authentication required!')
 
             self.post_data = kwargs.pop('post_data', None)
-            self.json_payload = kwargs.pop('json_payload', None)
             self.retry_count = kwargs.pop('retry_count',
                                           api.retry_count)
             self.retry_delay = kwargs.pop('retry_delay',
@@ -55,7 +57,6 @@ def bind_api(**config):
                                                  api.wait_on_rate_limit)
             self.wait_on_rate_limit_notify = kwargs.pop('wait_on_rate_limit_notify',
                                                         api.wait_on_rate_limit_notify)
-            self.return_cursors = kwargs.pop('return_cursors', False)
             self.parser = kwargs.pop('parser', api.parser)
             self.session.headers = kwargs.pop('headers', {})
             self.build_parameters(args, kwargs)
@@ -181,13 +182,20 @@ def bind_api(**config):
 
                 # Execute request
                 try:
-                    resp = self.session.request(self.method,
-                                                full_url,
-                                                data=self.post_data,
-                                                json=self.json_payload,
-                                                timeout=self.api.timeout,
-                                                auth=auth,
-                                                proxies=self.api.proxy)
+                    try:
+                        resp = self.session.request(self.method,
+                                                    full_url,
+                                                    data=self.post_data,
+                                                    timeout=self.api.timeout,
+                                                    auth=auth,
+                                                    proxies=self.api.proxy)
+                    except UnicodeEncodeError:
+                        resp = self.session.request(self.method,
+                                                    full_url,
+                                                    data=self.post_data.decode('utf-8'),
+                                                    timeout=self.api.timeout,
+                                                    auth=auth,
+                                                    proxies=self.api.proxy)
                 except Exception as e:
                     six.reraise(TweepError, TweepError('Failed to send request: %s' % e), sys.exc_info()[2])
 
@@ -206,7 +214,7 @@ def bind_api(**config):
                     continue
                 retry_delay = self.retry_delay
                 # Exit request loop if non-retry error code
-                if resp.status_code in (200, 204):
+                if resp.status_code == 200:
                     break
                 elif (resp.status_code == 429 or resp.status_code == 420) and self.wait_on_rate_limit:
                     if 'retry-after' in resp.headers:
@@ -234,8 +242,7 @@ def bind_api(**config):
                     raise TweepError(error_msg, resp, api_code=api_error_code)
 
             # Parse the response payload
-            self.return_cursors = self.return_cursors or 'cursor' in self.session.params
-            result = self.parser.parse(self, resp.text, return_cursors=self.return_cursors)
+            result = self.parser.parse(self, resp.text)
 
             # Store result into cache if one is available.
             if self.use_cache and self.api.cache and self.method == 'GET' and result:
@@ -244,21 +251,15 @@ def bind_api(**config):
             return result
 
     def _call(*args, **kwargs):
-        method = APIMethod(*args, **kwargs)
-        try:
-            if kwargs.get('create'):
-                return method
-            else:
-                return method.execute()
-        finally:
-            method.session.close()
+        method = APIMethod(args, kwargs)
+        if kwargs.get('create'):
+            return method
+        else:
+            return method.execute()
 
     # Set pagination mode
     if 'cursor' in APIMethod.allowed_param:
-        if APIMethod.payload_type == 'direct_message':
-            _call.pagination_mode = 'dm_cursor'
-        else:
-            _call.pagination_mode = 'cursor'
+        _call.pagination_mode = 'cursor'
     elif 'max_id' in APIMethod.allowed_param:
         if 'since_id' in APIMethod.allowed_param:
             _call.pagination_mode = 'id'
